@@ -1,0 +1,4 @@
+# This file ensures the output directory is tracked by git
+# Output files (CSV, HTML) are ignored but the directory structure is preserved
+
+
