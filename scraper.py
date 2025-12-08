@@ -20,12 +20,14 @@ import re
 
 
 class FusionDirectoryScraper:
-    def __init__(self, base_url: str = "https://www.fusionenergybase.com", headless: bool = False):
+    def __init__(self, base_url: str = "https://www.fusionenergybase.com", headless: bool = False, just_gather_categories: bool = False):
         self.base_url = base_url
         self.companies = []
         self.errors = []
         self.headless = headless
+        self.just_gather_categories = just_gather_categories
         self.driver = None
+        self.categories = []  # Store unique category/subcategory pairs
         
     def log(self, message: str, level: str = "INFO"):
         """Log messages with timestamp and level"""
@@ -473,7 +475,34 @@ class FusionDirectoryScraper:
                 self.log("Please check output/debug_main_page.html to inspect the page structure.")
                 return
             
-            # Step 3: Visit each company page
+            # Step 3: Gather categories and subcategories
+            self.log("Gathering categories and subcategories...")
+            seen_pairs = set()
+            for link_info in company_links:
+                category = link_info['category']
+                subcategory = link_info['subcategory']
+                pair = (category, subcategory)
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    self.categories.append({
+                        'category': category,
+                        'subcategory': subcategory
+                    })
+            
+            self.log(f"Found {len(self.categories)} unique category/subcategory pairs")
+            
+            # Always save categories CSV first
+            scraper.display_categories()
+            self.save_categories_to_csv()
+            
+            # If just gathering categories, skip company scraping
+            if self.just_gather_categories:
+                self.log("\n" + "="*80)
+                self.log("Category gathering complete!")
+                self.log(f"Found {len(self.categories)} unique category/subcategory pairs")
+                return
+            
+            # Step 4: Visit each company page
             total = len(company_links)
             self.log(f"\nStarting to scrape {total} company pages...")
             self.log("="*80)
@@ -525,6 +554,49 @@ class FusionDirectoryScraper:
         
         self.log(f"Data saved to {filename}")
         
+    def save_categories_to_csv(self, filename: str = "output/fusion_categories.csv"):
+        """Save the categories and subcategories to a CSV file"""
+        if not self.categories:
+            self.log("No categories to save.", "WARNING")
+            return
+        
+        import os
+        os.makedirs('output', exist_ok=True)
+        self.log(f"Saving categories to {filename}...")
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['category', 'subcategory']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for cat_info in sorted(self.categories, key=lambda x: (x['category'], x['subcategory'])):
+                writer.writerow(cat_info)
+        
+        self.log(f"Categories saved to {filename}")
+        
+    def display_categories(self):
+        """Display the categories and subcategories"""
+        print("\n" + "="*80)
+        print("CATEGORIES AND SUBCATEGORIES")
+        print("="*80)
+        
+        if not self.categories:
+            print("No categories were found.")
+            return
+        
+        # Group by category
+        from collections import defaultdict
+        category_map = defaultdict(list)
+        for cat_info in self.categories:
+            category_map[cat_info['category']].append(cat_info['subcategory'])
+        
+        for category in sorted(category_map.keys()):
+            print(f"\n{category}")
+            for subcategory in sorted(set(category_map[category])):
+                print(f"  └─ {subcategory}")
+        
+        print("\n" + "="*80)
+        print(f"Total: {len(category_map)} categories, {len(self.categories)} category/subcategory pairs")
+        print("="*80)
+        
     def display_results(self):
         """Display the scraped results"""
         print("\n" + "="*80)
@@ -563,20 +635,26 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Scrape Fusion Energy Base Supply Chain directory')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
+    parser.add_argument('--just-gather-categories', action='store_true', help='Only gather categories and subcategories, do not scrape companies')
     args = parser.parse_args()
     
-    scraper = FusionDirectoryScraper(headless=args.headless)
+    scraper = FusionDirectoryScraper(headless=args.headless, just_gather_categories=args.just_gather_categories)
     try:
         scraper.scrape()
-        scraper.display_results()
-        scraper.save_to_csv()
+        if not args.just_gather_categories:
+            scraper.display_results()
+            scraper.save_to_csv()
     except KeyboardInterrupt:
         print("\n\nScraping interrupted by user.")
-        scraper.save_to_csv()  # Save what we have
+        # Categories are already saved, only save companies if we were scraping them
+        if not args.just_gather_categories:
+            scraper.save_to_csv()  # Save what we have
         scraper.close_driver()
     except Exception as e:
         print(f"\n\nFatal error: {str(e)}")
         import traceback
         traceback.print_exc()
-        scraper.save_to_csv()  # Save what we have
+        # Categories are already saved, only save companies if we were scraping them
+        if not args.just_gather_categories:
+            scraper.save_to_csv()  # Save what we have
         scraper.close_driver()
