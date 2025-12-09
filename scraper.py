@@ -20,7 +20,7 @@ import re
 
 
 class FusionDirectoryScraper:
-    def __init__(self, base_url: str = "https://www.fusionenergybase.com", headless: bool = False, just_gather_categories: bool = False):
+    def __init__(self, base_url: str = "https://www.fusionenergybase.com", headless: bool = False, just_gather_categories: bool = False, limit: Optional[int] = None):
         self.base_url = base_url
         self.companies = []
         self.errors = []
@@ -28,6 +28,7 @@ class FusionDirectoryScraper:
         self.just_gather_categories = just_gather_categories
         self.driver = None
         self.categories = []  # Store unique category/subcategory pairs
+        self.limit = limit  # Limit number of subcategories to process
         
     def log(self, message: str, level: str = "INFO"):
         """Log messages with timestamp and level"""
@@ -492,7 +493,7 @@ class FusionDirectoryScraper:
             self.log(f"Found {len(self.categories)} unique category/subcategory pairs")
             
             # Always save categories CSV first
-            scraper.display_categories()
+            self.display_categories()
             self.save_categories_to_csv()
             
             # If just gathering categories, skip company scraping
@@ -502,12 +503,33 @@ class FusionDirectoryScraper:
                 self.log(f"Found {len(self.categories)} unique category/subcategory pairs")
                 return
             
-            # Step 4: Visit each company page
-            total = len(company_links)
+            # Step 4: Filter company links if limit is set
+            filtered_company_links = company_links
+            if self.limit is not None:
+                # Get unique subcategories in order
+                seen_subcategories = []
+                subcategory_set = set()
+                for link_info in company_links:
+                    subcategory = link_info['subcategory']
+                    if subcategory not in subcategory_set:
+                        seen_subcategories.append(subcategory)
+                        subcategory_set.add(subcategory)
+                        if len(seen_subcategories) >= self.limit:
+                            break
+                
+                # Filter to only include companies from the first n subcategories
+                allowed_subcategories = set(seen_subcategories[:self.limit])
+                filtered_company_links = [link for link in company_links if link['subcategory'] in allowed_subcategories]
+                self.log(f"Limited to first {self.limit} subcategories: {', '.join(seen_subcategories[:self.limit])}")
+            
+            # Step 5: Visit each company page
+            total = len(filtered_company_links)
             self.log(f"\nStarting to scrape {total} company pages...")
+            if self.limit is not None:
+                self.log(f"(Limited to first {self.limit} subcategories)")
             self.log("="*80)
             
-            for idx, link_info in enumerate(company_links, 1):
+            for idx, link_info in enumerate(filtered_company_links, 1):
                 url = link_info['url']
                 category = link_info['category']
                 subcategory = link_info['subcategory']
@@ -636,16 +658,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Scrape Fusion Energy Base Supply Chain directory')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
     parser.add_argument('--just-gather-categories', action='store_true', help='Only gather categories and subcategories, do not scrape companies')
+    parser.add_argument('--gather-israeli-companies', action='store_true', help='Gather Israeli companies for all subcategories using Groq API')
+    parser.add_argument('--limit', type=int, default=None, help='Limit processing to first n subcategories')
     args = parser.parse_args()
     
-    scraper = FusionDirectoryScraper(headless=args.headless, just_gather_categories=args.just_gather_categories)
+    # Step 1: Always scrape categories (and optionally companies)
+    scraper = FusionDirectoryScraper(headless=args.headless, just_gather_categories=args.just_gather_categories, limit=args.limit)
     try:
         scraper.scrape()
         if not args.just_gather_categories:
             scraper.display_results()
             scraper.save_to_csv()
     except KeyboardInterrupt:
-        print("\n\nScraping interrupted by user.")
+        print("\n\nOperation interrupted by user.")
         # Categories are already saved, only save companies if we were scraping them
         if not args.just_gather_categories:
             scraper.save_to_csv()  # Save what we have
@@ -658,3 +683,19 @@ if __name__ == "__main__":
         if not args.just_gather_categories:
             scraper.save_to_csv()  # Save what we have
         scraper.close_driver()
+    
+    # Step 2: If flag is set, gather Israeli companies
+    if args.gather_israeli_companies:
+        # Import here so dotenv is loaded when needed
+        from israeli_companies_gatherer import IsraeliCompaniesGatherer
+        
+        gatherer = IsraeliCompaniesGatherer()
+        try:
+            israeli_companies = gatherer.gather_israeli_companies_for_all_subcategories(limit=args.limit)
+            gatherer.save_israeli_companies_to_csv(israeli_companies)
+        except KeyboardInterrupt:
+            print("\n\nOperation interrupted by user.")
+        except Exception as e:
+            print(f"\n\nFatal error: {str(e)}")
+            import traceback
+            traceback.print_exc()
